@@ -115,20 +115,13 @@ jobs:
         run: |
           echo "Using Bob Shell to explain CodeQL findings..."
           
-          # Read alerts
-          ALERTS=$(cat /tmp/codeql-alerts.json)
-          
-          # Create prompt for Bob using heredoc
-          cat > /tmp/bob_prompt.txt <<'EOF'
-You are a security expert explaining CodeQL findings to developers.
-
-## CodeQL Security Findings
-
-The following security vulnerabilities were detected by CodeQL:
-
-EOF
-          
-          # Append alerts
+          # Create prompt for Bob
+          echo "You are a security expert explaining CodeQL findings to developers." > /tmp/bob_prompt.txt
+          echo "" >> /tmp/bob_prompt.txt
+          echo "## CodeQL Security Findings" >> /tmp/bob_prompt.txt
+          echo "" >> /tmp/bob_prompt.txt
+          echo "The following security vulnerabilities were detected by CodeQL:" >> /tmp/bob_prompt.txt
+          echo "" >> /tmp/bob_prompt.txt
           echo '```json' >> /tmp/bob_prompt.txt
           cat /tmp/codeql-alerts.json >> /tmp/bob_prompt.txt
           echo '```' >> /tmp/bob_prompt.txt
