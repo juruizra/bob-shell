@@ -167,9 +167,9 @@ ${{ steps.pr_diff.outputs.changed_files }}
 
 ## Diff Statistics
 
-\`\`\`
+```
 ${{ steps.pr_diff.outputs.diff_stats }}
-\`\`\`
+```
 
 ## Review Rules
 

@@ -159,14 +159,7 @@ Use this markdown structure:
 - **Explanation**: [Simple explanation]
 - **Risk**: [Why it's dangerous]
 - **Fix**: [How to fix it]
-- **Example**:
-```language
-// Vulnerable
-[bad code]
-
-// Secure
-[good code]
-```
+- **Example**: Show vulnerable code vs secure code
 
 ---
 
