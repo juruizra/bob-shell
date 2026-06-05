@@ -58,12 +58,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1  # Shallow clone is sufficient
       
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
       
@@ -296,7 +296,7 @@ jobs:
       
       - name: Apply Labels to Issue
         env:
-          GITHUB_TOKEN: ${{ secrets.SKILLBERRY_BOT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           LABELS_JSON=$(cat /tmp/selected_labels.json)
           

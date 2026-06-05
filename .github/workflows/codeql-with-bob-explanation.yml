@@ -3,24 +3,12 @@
 # ============================================================================
 #
 # PURPOSE:
-# This workflow combines CodeQL security scanning with Bob Shell to:
-# 1. Run CodeQL analysis to detect security vulnerabilities
-# 2. Use Bob Shell to explain findings in simple terms
-# 3. Post detailed explanations as PR comments
-#
-# WORKFLOW STEPS:
-# 1. Run CodeQL security scan
-# 2. Fetch CodeQL alerts from GitHub API
-# 3. Use Bob Shell to analyze and explain each finding
-# 4. Post explanations as PR comments
+# Combines CodeQL security scanning with Bob Shell to explain findings
+# in plain English, post them as PR comments, and upload as artifact.
 #
 # REQUIREMENTS:
-# - GitHub Secrets:
-#   * BOBSHELL_API_KEY: API key for Bob Shell
+# - GitHub Secrets: BOBSHELL_API_KEY
 # - Permissions: security-events, pull-requests write
-#
-# USAGE:
-# Runs automatically on PRs and push to main, plus weekly schedule
 #
 # ============================================================================
 
@@ -81,7 +69,12 @@ jobs:
         env:
           BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
         run: |
-          bob auth login --api-key "$BOBSHELL_API_KEY"
+          echo "Configuring Bob Shell authentication..."
+          if [ -z "$BOBSHELL_API_KEY" ]; then
+            echo "Error: BOBSHELL_API_KEY secret is not set"
+            exit 1
+          fi
+          echo "Bob Shell authentication configured successfully"
 
       - name: Fetch CodeQL Alerts
         id: fetch_alerts
@@ -93,7 +86,7 @@ jobs:
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/${{ github.repository }}/code-scanning/alerts" \
             > /tmp/codeql-alerts.json
-          
+
           ALERT_COUNT=$(jq length /tmp/codeql-alerts.json)
           echo "Found ${ALERT_COUNT} alerts"
           echo "alert_count=${ALERT_COUNT}" >> $GITHUB_OUTPUT
@@ -101,43 +94,72 @@ jobs:
       - name: Create Bob Prompt
         if: steps.fetch_alerts.outputs.alert_count > 0
         run: |
-          echo "You are a security expert explaining CodeQL findings to developers." > /tmp/bob_prompt.txt
-          echo "" >> /tmp/bob_prompt.txt
-          echo "## CodeQL Security Findings" >> /tmp/bob_prompt.txt
-          echo "" >> /tmp/bob_prompt.txt
-          echo "The following security vulnerabilities were detected:" >> /tmp/bob_prompt.txt
-          echo "" >> /tmp/bob_prompt.txt
-          echo '```json' >> /tmp/bob_prompt.txt
-          cat /tmp/codeql-alerts.json >> /tmp/bob_prompt.txt
-          echo '```' >> /tmp/bob_prompt.txt
-          echo "" >> /tmp/bob_prompt.txt
-          echo "## Your Task" >> /tmp/bob_prompt.txt
-          echo "" >> /tmp/bob_prompt.txt
-          echo "For each finding, provide:" >> /tmp/bob_prompt.txt
-          echo "1. Vulnerability Name" >> /tmp/bob_prompt.txt
-          echo "2. Severity Level" >> /tmp/bob_prompt.txt
-          echo "3. Simple explanation" >> /tmp/bob_prompt.txt
-          echo "4. Why it's dangerous" >> /tmp/bob_prompt.txt
-          echo "5. How to fix it" >> /tmp/bob_prompt.txt
-          echo "6. Code example" >> /tmp/bob_prompt.txt
+          PROMPT_FILE="/tmp/bob_prompt.txt"
+
+          {
+            echo "You are a security expert explaining CodeQL findings to developers."
+            echo ""
+            echo "CodeQL Security Findings"
+            echo ""
+            echo "The following security vulnerabilities were detected:"
+            echo ""
+            echo '```json'
+            cat /tmp/codeql-alerts.json
+            echo '```'
+            echo ""
+            echo "Your Task"
+            echo ""
+            echo "For each finding, provide:"
+            echo "1. Vulnerability Name and severity"
+            echo "2. Simple plain-English explanation of what it is"
+            echo "3. Why it is dangerous / what an attacker can do"
+            echo "4. How to fix it (specific code change)"
+            echo "5. A corrected code example"
+            echo ""
+            echo "Be concise, practical, and developer-friendly."
+          } > "${PROMPT_FILE}"
 
       - name: Get Bob Explanation
         if: steps.fetch_alerts.outputs.alert_count > 0
         id: bob_explain
+        env:
+          BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
         run: |
           echo "Getting Bob explanation..."
-          bob ask "$(cat /tmp/bob_prompt.txt)" > /tmp/bob_explanation.md
-          echo "Explanation generated"
+          bob --accept-license "$(cat /tmp/bob_prompt.txt)" > /tmp/bob_explanation.md 2>&1
+          echo "Explanation generated ($(wc -l < /tmp/bob_explanation.md) lines)"
 
-      - name: Post Explanation
+      - name: Write Explanation to Step Summary
+        if: steps.fetch_alerts.outputs.alert_count > 0
+        run: |
+          echo "## CodeQL Security Analysis - Bob Shell Explanation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Alerts found:** ${{ steps.fetch_alerts.outputs.alert_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat /tmp/bob_explanation.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Explanation as Artifact
+        if: steps.fetch_alerts.outputs.alert_count > 0
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-bob-explanation-${{ github.run_id }}
+          path: /tmp/bob_explanation.md
+          retention-days: 30
+
+      - name: Post Explanation as PR Comment
         if: steps.fetch_alerts.outputs.alert_count > 0 && github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
-            const explanation = fs.readFileSync('/tmp/bob_explanation.md', 'utf8');
-            
+            let explanation = fs.readFileSync('/tmp/bob_explanation.md', 'utf8');
+
+            const MAX_LENGTH = 60000;
+            if (explanation.length > MAX_LENGTH) {
+              explanation = explanation.substring(0, MAX_LENGTH) + '\n\n---\n> Truncated. Download full report from workflow artifacts.';
+            }
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
