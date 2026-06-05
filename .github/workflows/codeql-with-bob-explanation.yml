@@ -3,26 +3,12 @@
 # ============================================================================
 #
 # PURPOSE:
-# This workflow combines CodeQL security scanning with Bob Shell to:
-# 1. Run CodeQL analysis to detect security vulnerabilities
-# 2. Use Bob Shell to explain findings in simple terms
-# 3. Post detailed explanations as PR comments
-# 4. Upload explanation as a downloadable artifact
-#
-# WORKFLOW STEPS:
-# 1. Run CodeQL security scan
-# 2. Fetch CodeQL alerts from GitHub API
-# 3. Use Bob Shell to analyze and explain each finding
-# 4. Post explanations as PR comments
-# 5. Upload artifact with full explanation
+# Combines CodeQL security scanning with Bob Shell to explain findings
+# in plain English, post them as PR comments, and upload as artifact.
 #
 # REQUIREMENTS:
-# - GitHub Secrets:
-#   * BOBSHELL_API_KEY: API key for Bob Shell
+# - GitHub Secrets: BOBSHELL_API_KEY
 # - Permissions: security-events, pull-requests write
-#
-# USAGE:
-# Runs automatically on PRs and push to main, plus weekly schedule
 #
 # ============================================================================
 
@@ -88,7 +74,6 @@ jobs:
             echo "Error: BOBSHELL_API_KEY secret is not set"
             exit 1
           fi
-          # Bob Shell authenticates via BOBSHELL_API_KEY environment variable
           echo "Bob Shell authentication configured successfully"
 
       - name: Fetch CodeQL Alerts
@@ -101,7 +86,7 @@ jobs:
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/${{ github.repository }}/code-scanning/alerts" \
             > /tmp/codeql-alerts.json
-          
+
           ALERT_COUNT=$(jq length /tmp/codeql-alerts.json)
           echo "Found ${ALERT_COUNT} alerts"
           echo "alert_count=${ALERT_COUNT}" >> $GITHUB_OUTPUT
@@ -109,30 +94,30 @@ jobs:
       - name: Create Bob Prompt
         if: steps.fetch_alerts.outputs.alert_count > 0
         run: |
-          cat > /tmp/bob_prompt.txt << 'PROMPT_EOF'
-You are a security expert explaining CodeQL findings to developers.
+          PROMPT_FILE="/tmp/bob_prompt.txt"
 
-## CodeQL Security Findings
-
-The following security vulnerabilities were detected:
-
-PROMPT_EOF
-          echo '```json' >> /tmp/bob_prompt.txt
-          cat /tmp/codeql-alerts.json >> /tmp/bob_prompt.txt
-          echo '```' >> /tmp/bob_prompt.txt
-          cat >> /tmp/bob_prompt.txt << 'PROMPT_EOF'
-
-## Your Task
-
-For each finding, provide:
-1. Vulnerability Name and severity
-2. Simple plain-English explanation of what it is
-3. Why it is dangerous / what an attacker can do
-4. How to fix it (specific code change)
-5. A corrected code example
-
-Be concise, practical, and developer-friendly.
-PROMPT_EOF
+          {
+            echo "You are a security expert explaining CodeQL findings to developers."
+            echo ""
+            echo "CodeQL Security Findings"
+            echo ""
+            echo "The following security vulnerabilities were detected:"
+            echo ""
+            echo '```json'
+            cat /tmp/codeql-alerts.json
+            echo '```'
+            echo ""
+            echo "Your Task"
+            echo ""
+            echo "For each finding, provide:"
+            echo "1. Vulnerability Name and severity"
+            echo "2. Simple plain-English explanation of what it is"
+            echo "3. Why it is dangerous / what an attacker can do"
+            echo "4. How to fix it (specific code change)"
+            echo "5. A corrected code example"
+            echo ""
+            echo "Be concise, practical, and developer-friendly."
+          } > "${PROMPT_FILE}"
 
       - name: Get Bob Explanation
         if: steps.fetch_alerts.outputs.alert_count > 0
@@ -141,14 +126,13 @@ PROMPT_EOF
           BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
         run: |
           echo "Getting Bob explanation..."
-          # Use positional prompt (correct syntax — -p/--prompt is deprecated)
           bob --accept-license "$(cat /tmp/bob_prompt.txt)" > /tmp/bob_explanation.md 2>&1
           echo "Explanation generated ($(wc -l < /tmp/bob_explanation.md) lines)"
 
       - name: Write Explanation to Step Summary
         if: steps.fetch_alerts.outputs.alert_count > 0
         run: |
-          echo "## 🔐 CodeQL Security Analysis — Bob Shell Explanation" >> $GITHUB_STEP_SUMMARY
+          echo "## CodeQL Security Analysis - Bob Shell Explanation" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Alerts found:** ${{ steps.fetch_alerts.outputs.alert_count }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -170,18 +154,17 @@ PROMPT_EOF
           script: |
             const fs = require('fs');
             let explanation = fs.readFileSync('/tmp/bob_explanation.md', 'utf8');
-            
-            // Truncate if needed (PR comment limit ~65k chars)
+
             const MAX_LENGTH = 60000;
             if (explanation.length > MAX_LENGTH) {
-              explanation = explanation.substring(0, MAX_LENGTH) + '\n\n---\n⚠️ Truncated. Download full report from workflow artifacts.';
+              explanation = explanation.substring(0, MAX_LENGTH) + '\n\n---\n> Truncated. Download full report from workflow artifacts.';
             }
-            
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.payload.pull_request.number,
-              body: `## 🔐 CodeQL Security Analysis\n\n${explanation}`
+              body: `## CodeQL Security Analysis\n\n${explanation}`
             });
 
 # Made with Bob

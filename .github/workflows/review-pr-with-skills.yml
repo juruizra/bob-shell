@@ -3,30 +3,13 @@
 # ============================================================================
 #
 # PURPOSE:
-# This workflow reviews pull requests using IBM Bob Shell with custom skills
-# from the .bob/skills directory. It analyzes code for:
-# - SOLID principles violations
-# - Security vulnerabilities
-# - Architecture pattern issues
-# - Code quality problems
-#
-# WORKFLOW STEPS:
-# 1. Trigger: Activated when PR is opened/updated with 'review-with-bob' label
-# 2. Checkout: Get PR code and skills directory
-# 3. Install Bob Shell: Setup Bob Shell CLI
-# 4. Load Skills: Read all SKILL.md files from .bob/skills/*/
-# 5. Get PR Diff: Extract changes from the PR
-# 6. Bob Review: Run Bob with skills as context (positional prompt)
-# 7. Upload artifact with review result
-# 8. Write to Step Summary
-# 9. Post Results: Comment on PR with findings
+# Reviews pull requests using IBM Bob Shell with custom skills from the
+# .bob/skills directory. Analyzes code for security, architecture, quality.
 #
 # REQUIREMENTS:
-# - GitHub Secrets:
-#   * BOBSHELL_API_KEY: API key for Bob Shell
-#   * GITHUB_TOKEN: Automatically provided by GitHub
+# - GitHub Secrets: BOBSHELL_API_KEY, GITHUB_TOKEN
 # - Label: 'review-with-bob' must exist in repository
-# - Skills: .bob/skills/*/SKILL.md files with review rules
+# - Skills: .bob/skills/*/SKILL.md files
 #
 # USAGE:
 # Add 'review-with-bob' label to any PR to trigger automatic review
@@ -43,28 +26,28 @@ jobs:
   review-pr-with-skills:
     if: contains(github.event.pull_request.labels.*.name, 'review-with-bob')
     runs-on: ubuntu-latest
-    
+
     permissions:
       contents: read
       pull-requests: write
       issues: write
-    
+
     steps:
       - name: Checkout PR code
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      
+
       - name: Checkout base branch
         run: |
           git fetch origin ${{ github.event.pull_request.base.ref }}
-      
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-      
+
       - name: Install Bob Shell
         run: |
           curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash -s -- --package-manager npm
@@ -75,7 +58,7 @@ jobs:
             echo "Bob Shell installation failed"
             exit 1
           fi
-      
+
       - name: Authenticate Bob Shell
         env:
           BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
@@ -85,16 +68,15 @@ jobs:
             echo "Error: BOBSHELL_API_KEY secret is not set"
             exit 1
           fi
-          # Bob Shell authenticates via BOBSHELL_API_KEY environment variable
           echo "Bob Shell authentication configured successfully"
-      
+
       - name: Load Custom Skills
         id: load_skills
         run: |
           echo "Loading custom skills from .bob/skills/"
           SKILLS_CONTENT=""
           SKILL_COUNT=0
-          
+
           for skill_dir in .bob/skills/*/; do
             if [ -d "$skill_dir" ]; then
               skill_file="${skill_dir}SKILL.md"
@@ -107,93 +89,81 @@ jobs:
               fi
             fi
           done
-          
+
           echo "Loaded ${SKILL_COUNT} skill files"
-          echo "${SKILLS_CONTENT}" > /tmp/skills_context.md
+          printf '%b' "${SKILLS_CONTENT}" > /tmp/skills_context.md
           echo "skills_count=${SKILL_COUNT}" >> $GITHUB_OUTPUT
-      
+
       - name: Get PR Diff
         id: pr_diff
         run: |
           echo "Generating PR diff..."
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          
-          # Truncate diff to avoid oversized prompts (100KB max)
+
           git diff ${BASE_SHA}...${HEAD_SHA} | head -c 100000 > /tmp/pr_diff.txt
-          
+
           CHANGED_FILES=$(git diff --name-only ${BASE_SHA}...${HEAD_SHA} | tr '\n' ', ')
           DIFF_STATS=$(git diff --stat ${BASE_SHA}...${HEAD_SHA})
-          
+
           echo "changed_files=${CHANGED_FILES}" >> $GITHUB_OUTPUT
-          echo "diff_stats<<EOF" >> $GITHUB_OUTPUT
-          echo "${DIFF_STATS}" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-      
+          {
+            echo "diff_stats<<EOF"
+            echo "${DIFF_STATS}"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
       - name: Create Review Prompt
         run: |
-          cat > /tmp/review_prompt.md << 'PROMPT_EOF'
-# Code Review Request
+          PROMPT_FILE="/tmp/review_prompt.md"
 
-You are an expert code reviewer analyzing a Pull Request using custom review rules.
-PROMPT_EOF
+          {
+            echo "Code Review Request"
+            echo ""
+            echo "You are an expert code reviewer analyzing a Pull Request using custom review rules."
+            echo ""
+            echo "Pull Request Information"
+            echo ""
+            echo "Repository: ${{ github.repository }}"
+            echo "PR Number: ${{ github.event.pull_request.number }}"
+            echo "Title: ${{ github.event.pull_request.title }}"
+            echo "Author: ${{ github.event.pull_request.user.login }}"
+            echo "Base Branch: ${{ github.event.pull_request.base.ref }}"
+            echo "Head Branch: ${{ github.event.pull_request.head.ref }}"
+            echo ""
+            echo "Changed Files"
+            echo ""
+            echo "${{ steps.pr_diff.outputs.changed_files }}"
+            echo ""
+            echo "Diff Stats"
+            echo ""
+            echo "${{ steps.pr_diff.outputs.diff_stats }}"
+            echo ""
+            echo "Review Rules - Apply the following custom review rules:"
+            echo ""
+            cat /tmp/skills_context.md
+            echo ""
+            echo "Code Changes to Review"
+            echo ""
+            echo '```diff'
+            cat /tmp/pr_diff.txt
+            echo '```'
+            echo ""
+            echo "Review Instructions"
+            echo "1. Analyze ALL code changes in the diff"
+            echo "2. Apply ALL review rules from custom skills above"
+            echo "3. Identify violations by severity: CRITICAL / HIGH / MEDIUM / LOW"
+            echo "4. Provide specific recommendations with file and line references"
+            echo "5. Highlight any security vulnerabilities immediately"
+            echo "6. Suggest improvements for code quality and architecture"
+          } > "${PROMPT_FILE}"
 
-          cat >> /tmp/review_prompt.md << EOF
-
-## Pull Request Information
-
-- **Repository**: ${{ github.repository }}
-- **PR Number**: #${{ github.event.pull_request.number }}
-- **Title**: ${{ github.event.pull_request.title }}
-- **Author**: @${{ github.event.pull_request.user.login }}
-- **Base Branch**: ${{ github.event.pull_request.base.ref }}
-- **Head Branch**: ${{ github.event.pull_request.head.ref }}
-
-## Changed Files
-
-${{ steps.pr_diff.outputs.changed_files }}
-
-## Diff Stats
-
-${{ steps.pr_diff.outputs.diff_stats }}
-
-## Review Rules
-
-Apply the following custom review rules:
-
-EOF
-          
-          if [ -f /tmp/skills_context.md ]; then
-            cat /tmp/skills_context.md >> /tmp/review_prompt.md
-          fi
-          
-          cat >> /tmp/review_prompt.md << 'PROMPT_EOF'
-
-## Code Changes to Review
-
-```diff
-PROMPT_EOF
-          cat /tmp/pr_diff.txt >> /tmp/review_prompt.md
-          cat >> /tmp/review_prompt.md << 'PROMPT_EOF'
-```
-
-## Review Instructions
-
-1. Analyze ALL code changes in the diff
-2. Apply ALL review rules from custom skills above
-3. Identify violations by severity: CRITICAL / HIGH / MEDIUM / LOW
-4. Provide specific recommendations with file and line references
-5. Highlight any security vulnerabilities immediately
-6. Suggest improvements for code quality and architecture
-PROMPT_EOF
-      
       - name: Run Bob Review
         id: bob_review
         env:
           BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
         run: |
           echo "Running Bob Shell review..."
-          # Use positional prompt (correct syntax — -p/--prompt is deprecated)
           bob --accept-license "$(cat /tmp/review_prompt.md)" > /tmp/bob_review.md 2>&1
           echo "Review complete ($(wc -l < /tmp/bob_review.md) lines)"
 
@@ -206,13 +176,13 @@ PROMPT_EOF
 
       - name: Write Review to Step Summary
         run: |
-          echo "## 🔍 Bob Shell PR Review — PR #${{ github.event.pull_request.number }}" >> $GITHUB_STEP_SUMMARY
+          echo "## Bob Shell PR Review - PR ${{ github.event.pull_request.number }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**PR:** ${{ github.event.pull_request.title }}" >> $GITHUB_STEP_SUMMARY
           echo "**Files changed:** ${{ steps.pr_diff.outputs.changed_files }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           cat /tmp/bob_review.md >> $GITHUB_STEP_SUMMARY
-      
+
       - name: Post Review Comment on PR
         uses: actions/github-script@v7
         with:
@@ -220,13 +190,12 @@ PROMPT_EOF
           script: |
             const fs = require('fs');
             let review = fs.readFileSync('/tmp/bob_review.md', 'utf8');
-            
-            // PR comment limit ~65k chars — truncate with notice if needed
+
             const MAX_LENGTH = 60000;
             if (review.length > MAX_LENGTH) {
-              review = review.substring(0, MAX_LENGTH) + '\n\n---\n⚠️ Review truncated. Download full report from workflow artifacts.';
+              review = review.substring(0, MAX_LENGTH) + '\n\n---\n> Review truncated. Download full report from workflow artifacts.';
             }
-            
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,

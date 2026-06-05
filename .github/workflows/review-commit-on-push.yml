@@ -6,20 +6,9 @@
 # Analyzes code changes in each commit pushed to any branch using Bob Shell
 # with custom skills. Provides immediate feedback on code quality.
 #
-# WORKFLOW STEPS:
-# 1. Trigger: Activated on every push to any branch (except docs/md)
-# 2. Get commit diff
-# 3. Load custom skills
-# 4. Run Bob review on the changes
-# 5. Upload review as artifact + write to Step Summary
-# 6. Post results as commit comment
-#
 # REQUIREMENTS:
 # - GitHub Secrets: BOBSHELL_API_KEY
 # - Skills: .bob/skills/*/SKILL.md files
-#
-# USAGE:
-# Runs automatically on every push
 #
 # ============================================================================
 
@@ -28,7 +17,7 @@ name: Review Commit on Push
 on:
   push:
     branches:
-      - '**'  # All branches
+      - '**'
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -37,22 +26,22 @@ on:
 jobs:
   review-commit:
     runs-on: ubuntu-latest
-    
+
     permissions:
       contents: read
       issues: write
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2  # Need parent commit for diff
-      
+          fetch-depth: 2
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-      
+
       - name: Install Bob Shell
         run: |
           curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash -s -- --package-manager npm
@@ -63,7 +52,7 @@ jobs:
             echo "Bob Shell installation failed"
             exit 1
           fi
-      
+
       - name: Authenticate Bob Shell
         env:
           BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
@@ -73,16 +62,15 @@ jobs:
             echo "Error: BOBSHELL_API_KEY secret is not set"
             exit 1
           fi
-          # Bob Shell authenticates via BOBSHELL_API_KEY environment variable
           echo "Bob Shell authentication configured successfully"
-      
+
       - name: Load Custom Skills
         id: load_skills
         run: |
           echo "Loading custom skills..."
           SKILLS_CONTENT=""
           SKILL_COUNT=0
-          
+
           for skill_dir in .bob/skills/*/; do
             if [ -d "$skill_dir" ]; then
               skill_file="${skill_dir}SKILL.md"
@@ -95,29 +83,24 @@ jobs:
               fi
             fi
           done
-          
+
           echo "Loaded ${SKILL_COUNT} skills"
-          echo "${SKILLS_CONTENT}" > /tmp/skills_context.md
+          printf '%b' "${SKILLS_CONTENT}" > /tmp/skills_context.md
           echo "skill_count=${SKILL_COUNT}" >> $GITHUB_OUTPUT
-      
+
       - name: Get Commit Diff
         id: commit_diff
         run: |
           echo "Getting commit diff..."
-          
-          # Get the diff for this commit (truncated to avoid oversized prompts)
+
           git diff HEAD~1 HEAD | head -c 100000 > /tmp/commit_diff.txt
-          
-          # Get changed files
+
           CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD | tr '\n' ', ')
-          
-          # Get commit info
           COMMIT_MSG=$(git log -1 --pretty=%B)
           COMMIT_AUTHOR=$(git log -1 --pretty=%an)
           COMMIT_SHA=$(git log -1 --pretty=%H)
-          
+
           echo "changed_files=${CHANGED_FILES}" >> $GITHUB_OUTPUT
-          # Use heredoc for multiline commit message
           {
             echo "commit_msg<<MSG_EOF"
             echo "${COMMIT_MSG}"
@@ -125,63 +108,52 @@ jobs:
           } >> $GITHUB_OUTPUT
           echo "commit_author=${COMMIT_AUTHOR}" >> $GITHUB_OUTPUT
           echo "commit_sha=${COMMIT_SHA}" >> $GITHUB_OUTPUT
-      
+
       - name: Create Review Prompt
         run: |
-          cat > /tmp/review_prompt.md << 'PROMPT_EOF'
-# Commit Review Request
+          PROMPT_FILE="/tmp/review_prompt.md"
 
-Analyze this commit for code quality issues using custom review rules.
-PROMPT_EOF
-          
-          cat >> /tmp/review_prompt.md << EOF
+          {
+            echo "Commit Review Request"
+            echo ""
+            echo "Analyze this commit for code quality issues using custom review rules."
+            echo ""
+            echo "Commit Information"
+            echo ""
+            echo "Repository: ${{ github.repository }}"
+            echo "Branch: ${{ github.ref_name }}"
+            echo "Commit: ${{ steps.commit_diff.outputs.commit_sha }}"
+            echo "Author: ${{ steps.commit_diff.outputs.commit_author }}"
+            echo "Message: ${{ steps.commit_diff.outputs.commit_msg }}"
+            echo ""
+            echo "Changed Files"
+            echo ""
+            echo "${{ steps.commit_diff.outputs.changed_files }}"
+            echo ""
+            echo "Review Rules"
+            echo ""
+            cat /tmp/skills_context.md
+            echo ""
+            echo "Code Changes to Review"
+            echo ""
+            echo '```diff'
+            cat /tmp/commit_diff.txt
+            echo '```'
+            echo ""
+            echo "Instructions"
+            echo "1. Analyze the code changes"
+            echo "2. Apply all custom review rules"
+            echo "3. Identify issues by severity (CRITICAL / HIGH / MEDIUM / LOW)"
+            echo "4. Provide specific recommendations with line references"
+            echo "5. Keep feedback concise and actionable"
+          } > "${PROMPT_FILE}"
 
-## Commit Information
-
-- **Repository**: ${{ github.repository }}
-- **Branch**: ${{ github.ref_name }}
-- **Commit**: ${{ steps.commit_diff.outputs.commit_sha }}
-- **Author**: ${{ steps.commit_diff.outputs.commit_author }}
-- **Message**: ${{ steps.commit_diff.outputs.commit_msg }}
-
-## Changed Files
-
-${{ steps.commit_diff.outputs.changed_files }}
-
-## Review Rules
-
-EOF
-          
-          if [ -f /tmp/skills_context.md ]; then
-            cat /tmp/skills_context.md >> /tmp/review_prompt.md
-          fi
-          
-          cat >> /tmp/review_prompt.md << 'PROMPT_EOF'
-
-## Code Changes
-
-```diff
-PROMPT_EOF
-          cat /tmp/commit_diff.txt >> /tmp/review_prompt.md
-          cat >> /tmp/review_prompt.md << 'PROMPT_EOF'
-```
-
-## Instructions
-
-1. Analyze the code changes
-2. Apply all custom review rules
-3. Identify issues by severity (CRITICAL / HIGH / MEDIUM / LOW)
-4. Provide specific recommendations with line references
-5. Keep feedback concise and actionable
-PROMPT_EOF
-      
       - name: Run Bob Review
         id: bob_review
         env:
           BOBSHELL_API_KEY: ${{ secrets.BOBSHELL_API_KEY }}
         run: |
           echo "Running Bob review..."
-          # Use positional prompt (correct syntax — -p/--prompt is deprecated)
           bob --accept-license "$(cat /tmp/review_prompt.md)" > /tmp/bob_review.md 2>&1
           echo "Review complete ($(wc -l < /tmp/bob_review.md) lines)"
 
@@ -194,13 +166,13 @@ PROMPT_EOF
 
       - name: Write Review to Step Summary
         run: |
-          echo "## 🔍 Bob Shell Commit Review" >> $GITHUB_STEP_SUMMARY
+          echo "## Bob Shell Commit Review" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Commit:** \`${{ steps.commit_diff.outputs.commit_sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ steps.commit_diff.outputs.commit_sha }}" >> $GITHUB_STEP_SUMMARY
           echo "**Files changed:** ${{ steps.commit_diff.outputs.changed_files }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           cat /tmp/bob_review.md >> $GITHUB_STEP_SUMMARY
-      
+
       - name: Post Review as Commit Comment
         uses: actions/github-script@v7
         with:
@@ -208,13 +180,12 @@ PROMPT_EOF
           script: |
             const fs = require('fs');
             let review = fs.readFileSync('/tmp/bob_review.md', 'utf8');
-            
-            // Commit comments have a character limit — truncate if needed
+
             const MAX_LENGTH = 60000;
             if (review.length > MAX_LENGTH) {
-              review = review.substring(0, MAX_LENGTH) + '\n\n---\n⚠️ Truncated. Download full report from workflow artifacts.';
+              review = review.substring(0, MAX_LENGTH) + '\n\n---\n> Truncated. Download full report from workflow artifacts.';
             }
-            
+
             await github.rest.repos.createCommitComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
