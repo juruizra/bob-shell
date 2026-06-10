@@ -72,6 +72,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: dev
           fetch-depth: 0  # Full history for better context
           token: ${{ secrets.GH_PAT }}
       
@@ -214,6 +215,7 @@ jobs:
             4. Write clean, maintainable, and secure code
             5. Consider edge cases and error handling
             6. Ensure backward compatibility if applicable
+            7. CRITICAL INSTRUCTION: ONLY modify local files. DO NOT use git to commit or push. DO NOT use gh to create pull requests. The GitHub Actions workflow will automatically handle all git commits and pull request creation. Do not execute any terminal commands related to git or github.
             
             Make the fix production-ready and compliant with best practices."
 
